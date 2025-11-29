@@ -7,51 +7,62 @@ import { useAccount } from 'wagmi';
 import { useFhevm, useEncrypt, useDecrypt } from '../fhevm-sdk/src';
 import { ethers } from 'ethers';
 
-interface GeneticData {
+interface GeneData {
   id: string;
   name: string;
   encryptedValue: string;
-  publicValue1: number;
-  publicValue2: number;
+  age: number;
+  qualityScore: number;
   description: string;
-  creator: string;
   timestamp: number;
-  isVerified: boolean;
-  decryptedValue: number;
+  creator: string;
+  isVerified?: boolean;
+  decryptedValue?: number;
+}
+
+interface MarketStats {
+  totalData: number;
+  verifiedData: number;
+  avgQuality: number;
+  recentListings: number;
 }
 
 const App: React.FC = () => {
   const { address, isConnected } = useAccount();
   const [loading, setLoading] = useState(true);
-  const [geneticData, setGeneticData] = useState<GeneticData[]>([]);
+  const [geneDataList, setGeneDataList] = useState<GeneData[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingData, setCreatingData] = useState(false);
   const [transactionStatus, setTransactionStatus] = useState<{ visible: boolean; status: "pending" | "success" | "error"; message: string; }>({ 
     visible: false, 
-    status: "pending", 
+    status: "pending" as const, 
     message: "" 
   });
-  const [newData, setNewData] = useState({ name: "", value: "", description: "", category: "" });
-  const [selectedData, setSelectedData] = useState<GeneticData | null>(null);
-  const [isDecrypting, setIsDecrypting] = useState(false);
+  const [newGeneData, setNewGeneData] = useState({ name: "", value: "", age: "", quality: "", description: "" });
+  const [selectedData, setSelectedData] = useState<GeneData | null>(null);
+  const [marketStats, setMarketStats] = useState<MarketStats>({ totalData: 0, verifiedData: 0, avgQuality: 0, recentListings: 0 });
+  const [showFAQ, setShowFAQ] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
   const [contractAddress, setContractAddress] = useState("");
   const [fhevmInitializing, setFhevmInitializing] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [activeFilter, setActiveFilter] = useState("all");
 
   const { status, initialize, isInitialized } = useFhevm();
-  const { encrypt, isEncrypting } = useEncrypt();
+  const { encrypt, isEncrypting} = useEncrypt();
   const { verifyDecryption, isDecrypting: fheIsDecrypting } = useDecrypt();
 
   useEffect(() => {
     const initFhevmAfterConnection = async () => {
-      if (!isConnected || isInitialized || fhevmInitializing) return;
+      if (!isConnected) return;
+      if (isInitialized || fhevmInitializing) return;
       
       try {
         setFhevmInitializing(true);
+        console.log('Initializing FHEVM for GeneMart...');
         await initialize();
+        console.log('FHEVM initialized successfully');
       } catch (error) {
+        console.error('Failed to initialize FHEVM:', error);
         setTransactionStatus({ 
           visible: true, 
           status: "error", 
@@ -96,7 +107,7 @@ const App: React.FC = () => {
       if (!contract) return;
       
       const businessIds = await contract.getAllBusinessIds();
-      const dataList: GeneticData[] = [];
+      const dataList: GeneData[] = [];
       
       for (const businessId of businessIds) {
         try {
@@ -105,8 +116,8 @@ const App: React.FC = () => {
             id: businessId,
             name: businessData.name,
             encryptedValue: businessId,
-            publicValue1: Number(businessData.publicValue1) || 0,
-            publicValue2: Number(businessData.publicValue2) || 0,
+            age: Number(businessData.publicValue1) || 0,
+            qualityScore: Number(businessData.publicValue2) || 0,
             description: businessData.description,
             timestamp: Number(businessData.timestamp),
             creator: businessData.creator,
@@ -114,11 +125,12 @@ const App: React.FC = () => {
             decryptedValue: Number(businessData.decryptedValue) || 0
           });
         } catch (e) {
-          console.error('Error loading business data:', e);
+          console.error('Error loading gene data:', e);
         }
       }
       
-      setGeneticData(dataList);
+      setGeneDataList(dataList);
+      updateMarketStats(dataList);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
@@ -127,7 +139,16 @@ const App: React.FC = () => {
     }
   };
 
-  const createData = async () => {
+  const updateMarketStats = (data: GeneData[]) => {
+    const totalData = data.length;
+    const verifiedData = data.filter(d => d.isVerified).length;
+    const avgQuality = data.length > 0 ? data.reduce((sum, d) => sum + d.qualityScore, 0) / data.length : 0;
+    const recentListings = data.filter(d => Date.now()/1000 - d.timestamp < 60 * 60 * 24 * 7).length;
+    
+    setMarketStats({ totalData, verifiedData, avgQuality, recentListings });
+  };
+
+  const createGeneData = async () => {
     if (!isConnected || !address) { 
       setTransactionStatus({ visible: true, status: "error", message: "Please connect wallet first" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
@@ -135,41 +156,41 @@ const App: React.FC = () => {
     }
     
     setCreatingData(true);
-    setTransactionStatus({ visible: true, status: "pending", message: "Creating genetic data with FHE encryption..." });
+    setTransactionStatus({ visible: true, status: "pending", message: "Encrypting gene data with FHE..." });
     
     try {
       const contract = await getContractWithSigner();
       if (!contract) throw new Error("Failed to get contract with signer");
       
-      const dataValue = parseInt(newData.value) || 0;
+      const geneValue = parseInt(newGeneData.value) || 0;
       const businessId = `gene-${Date.now()}`;
       
-      const encryptedResult = await encrypt(contractAddress, address, dataValue);
+      const encryptedResult = await encrypt(contractAddress, address, geneValue);
       
       const tx = await contract.createBusinessData(
         businessId,
-        newData.name,
+        newGeneData.name,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        parseInt(newData.category) || 1,
-        0,
-        newData.description
+        parseInt(newGeneData.age) || 0,
+        parseInt(newGeneData.quality) || 0,
+        newGeneData.description
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "Storing encrypted data..." });
       await tx.wait();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Genetic data created successfully!" });
+      setTransactionStatus({ visible: true, status: "success", message: "Gene data encrypted and stored!" });
       setTimeout(() => {
         setTransactionStatus({ visible: false, status: "pending", message: "" });
       }, 2000);
       
       await loadData();
       setShowCreateModal(false);
-      setNewData({ name: "", value: "", description: "", category: "" });
+      setNewGeneData({ name: "", value: "", age: "", quality: "", description: "" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
-        ? "Transaction rejected by user" 
+        ? "Transaction rejected" 
         : "Submission failed: " + (e.message || "Unknown error");
       setTransactionStatus({ visible: true, status: "error", message: errorMessage });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
@@ -185,7 +206,6 @@ const App: React.FC = () => {
       return null; 
     }
     
-    setIsDecrypting(true);
     try {
       const contractRead = await getContractReadOnly();
       if (!contractRead) return null;
@@ -193,8 +213,16 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ visible: true, status: "success", message: "Data already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "Data already verified" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
+        
         return storedValue;
       }
       
@@ -210,40 +238,55 @@ const App: React.FC = () => {
           contractWrite.verifyDecryption(businessId, abiEncodedClearValues, decryptionProof)
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption on-chain..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption..." });
       
       const clearValue = result.decryptionResult.clearValues[encryptedValueHandle];
       
       await loadData();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Data decrypted and verified successfully!" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+      setTransactionStatus({ visible: true, status: "success", message: "Data decrypted successfully!" });
+      setTimeout(() => {
+        setTransactionStatus({ visible: false, status: "pending", message: "" });
+      }, 2000);
       
       return Number(clearValue);
       
     } catch (e: any) { 
       if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "Data is already verified" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
+        
         await loadData();
         return null;
       }
       
-      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed: " + (e.message || "Unknown error") });
+      setTransactionStatus({ 
+        visible: true, 
+        status: "error", 
+        message: "Decryption failed: " + (e.message || "Unknown error") 
+      });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return null; 
-    } finally { 
-      setIsDecrypting(false); 
     }
   };
 
-  const checkAvailability = async () => {
+  const testAvailability = async () => {
     try {
       const contract = await getContractReadOnly();
       if (!contract) return;
       
       const isAvailable = await contract.isAvailable();
-      setTransactionStatus({ visible: true, status: "success", message: "Contract is available and ready!" });
+      setTransactionStatus({ 
+        visible: true, 
+        status: "success", 
+        message: "Contract is available and responding" 
+      });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
@@ -251,19 +294,115 @@ const App: React.FC = () => {
     }
   };
 
-  const filteredData = geneticData.filter(item => {
-    const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                         item.description.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = activeFilter === "all" || 
-                         (activeFilter === "verified" && item.isVerified) ||
-                         (activeFilter === "unverified" && !item.isVerified);
-    return matchesSearch && matchesFilter;
-  });
+  const filteredData = geneDataList.filter(data =>
+    data.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    data.description.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
-  const stats = {
-    total: geneticData.length,
-    verified: geneticData.filter(item => item.isVerified).length,
-    totalValue: geneticData.reduce((sum, item) => sum + (item.isVerified ? item.decryptedValue : 0), 0)
+  const renderStatsPanel = () => {
+    return (
+      <div className="stats-panels">
+        <div className="stat-panel gold-panel">
+          <div className="stat-icon">🧬</div>
+          <div className="stat-content">
+            <h3>Total Data Sets</h3>
+            <div className="stat-value">{marketStats.totalData}</div>
+            <div className="stat-trend">+{marketStats.recentListings} this week</div>
+          </div>
+        </div>
+        
+        <div className="stat-panel silver-panel">
+          <div className="stat-icon">🔐</div>
+          <div className="stat-content">
+            <h3>Verified Data</h3>
+            <div className="stat-value">{marketStats.verifiedData}/{marketStats.totalData}</div>
+            <div className="stat-trend">FHE Protected</div>
+          </div>
+        </div>
+        
+        <div className="stat-panel bronze-panel">
+          <div className="stat-icon">⭐</div>
+          <div className="stat-content">
+            <h3>Avg Quality Score</h3>
+            <div className="stat-value">{marketStats.avgQuality.toFixed(1)}/10</div>
+            <div className="stat-trend">Research Grade</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderFAQSection = () => {
+    const faqs = [
+      {
+        question: "How is my genetic data protected?",
+        answer: "Your data is encrypted using Fully Homomorphic Encryption (FHE), allowing pharmaceutical companies to perform computations without ever seeing the raw data."
+      },
+      {
+        question: "What can researchers do with my encrypted data?",
+        answer: "Researchers can run statistical analysis and machine learning models on your encrypted data, receiving only aggregated results while your individual data remains private."
+      },
+      {
+        question: "How do I earn from my genetic data?",
+        answer: "You receive royalties every time your encrypted data is used in research. The FHE system ensures usage is tracked transparently while maintaining privacy."
+      },
+      {
+        question: "Is my identity protected?",
+        answer: "Yes, all personal identifiers are removed before encryption. Researchers only work with anonymized, encrypted genetic markers."
+      }
+    ];
+
+    return (
+      <div className="faq-section">
+        <h3>Frequently Asked Questions</h3>
+        <div className="faq-list">
+          {faqs.map((faq, index) => (
+            <div key={index} className="faq-item">
+              <div className="faq-question">{faq.question}</div>
+              <div className="faq-answer">{faq.answer}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderFHEProcess = () => {
+    return (
+      <div className="fhe-process">
+        <div className="process-step">
+          <div className="step-icon">1</div>
+          <div className="step-content">
+            <h4>Data Encryption</h4>
+            <p>Genetic data encrypted with Zama FHE 🔐</p>
+          </div>
+        </div>
+        <div className="process-arrow">→</div>
+        <div className="process-step">
+          <div className="step-icon">2</div>
+          <div className="step-content">
+            <h4>Secure Storage</h4>
+            <p>Encrypted data stored on blockchain</p>
+          </div>
+        </div>
+        <div className="process-arrow">→</div>
+        <div className="process-step">
+          <div className="step-icon">3</div>
+          <div className="step-content">
+            <h4>Homomorphic Computation</h4>
+            <p>Researchers compute on encrypted data</p>
+          </div>
+        </div>
+        <div className="process-arrow">→</div>
+        <div className="process-step">
+          <div className="step-icon">4</div>
+          <div className="step-content">
+            <h4>Profit Sharing</h4>
+            <p>Earn royalties from research usage</p>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   if (!isConnected) {
@@ -271,34 +410,33 @@ const App: React.FC = () => {
       <div className="app-container">
         <header className="app-header">
           <div className="logo">
-            <h1>🧬 GeneMart FHE</h1>
-            <span>Private Genetic Data Marketplace</span>
+            <h1>GeneMart FHE 🧬</h1>
+            <p>Private Genetic Data Marketplace</p>
           </div>
           <div className="header-actions">
-            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+            <div className="wallet-connect-wrapper">
+              <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+            </div>
           </div>
         </header>
         
         <div className="connection-prompt">
           <div className="connection-content">
-            <div className="dna-animation">🧬</div>
-            <h2>Welcome to GeneMart FHE</h2>
-            <p>Connect your wallet to access the private genetic data marketplace with fully homomorphic encryption.</p>
-            <div className="feature-grid">
-              <div className="feature-card">
-                <div className="feature-icon">🔐</div>
-                <h3>FHE Encryption</h3>
-                <p>Genetic data encrypted with Zama FHE technology</p>
+            <div className="connection-icon">🧬</div>
+            <h2>Connect Your Wallet to Access GeneMart</h2>
+            <p>Securely monetize your genetic data while maintaining complete privacy through FHE encryption.</p>
+            <div className="connection-steps">
+              <div className="step">
+                <span>1</span>
+                <p>Connect your wallet to initialize FHE system</p>
               </div>
-              <div className="feature-card">
-                <div className="feature-icon">💰</div>
-                <h3>Data Monetization</h3>
-                <p>Sell encrypted genetic data usage rights to pharma companies</p>
+              <div className="step">
+                <span>2</span>
+                <p>Upload and encrypt your genetic data</p>
               </div>
-              <div className="feature-card">
-                <div className="feature-icon">⚡</div>
-                <h3>Research Acceleration</h3>
-                <p>Enable homomorphic computations on encrypted data</p>
+              <div className="step">
+                <span>3</span>
+                <p>Earn from pharmaceutical research</p>
               </div>
             </div>
           </div>
@@ -310,16 +448,18 @@ const App: React.FC = () => {
   if (!isInitialized || fhevmInitializing) {
     return (
       <div className="loading-screen">
-        <div className="dna-spinner">🧬</div>
+        <div className="fhe-spinner"></div>
         <p>Initializing FHE Encryption System...</p>
+        <p>Status: {fhevmInitializing ? "Initializing FHEVM" : status}</p>
+        <p className="loading-note">Securing your genetic data</p>
       </div>
     );
   }
 
   if (loading) return (
     <div className="loading-screen">
-      <div className="dna-spinner">🧬</div>
-      <p>Loading encrypted genetic data...</p>
+      <div className="fhe-spinner"></div>
+      <p>Loading encrypted genetic marketplace...</p>
     </div>
   );
 
@@ -327,116 +467,108 @@ const App: React.FC = () => {
     <div className="app-container">
       <header className="app-header">
         <div className="logo">
-          <h1>🧬 GeneMart FHE</h1>
-          <span>基因數據隱私市場</span>
+          <h1>GeneMart FHE 🧬</h1>
+          <p>Private Genetic Data Marketplace</p>
         </div>
         
         <div className="header-actions">
-          <button onClick={checkAvailability} className="check-btn">
-            Check Availability
+          <button onClick={testAvailability} className="test-btn">
+            Test Contract
           </button>
-          <button onClick={() => setShowCreateModal(true)} className="create-btn">
-            + Add Genetic Data
+          <button 
+            onClick={() => setShowCreateModal(true)} 
+            className="create-btn"
+          >
+            + List Genetic Data
           </button>
-          <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+          <div className="wallet-connect-wrapper">
+            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+          </div>
         </div>
       </header>
       
       <div className="main-content">
-        <div className="stats-panel">
-          <div className="stat-item">
-            <div className="stat-value">{stats.total}</div>
-            <div className="stat-label">Total Datasets</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-value">{stats.verified}</div>
-            <div className="stat-label">Verified</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-value">{stats.totalValue}</div>
-            <div className="stat-label">Total Value</div>
-          </div>
-        </div>
-
-        <div className="controls-panel">
-          <div className="search-box">
-            <input 
-              type="text" 
-              placeholder="Search genetic data..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-          <div className="filter-tabs">
-            <button 
-              className={activeFilter === "all" ? "active" : ""}
-              onClick={() => setActiveFilter("all")}
-            >
-              All Data
-            </button>
-            <button 
-              className={activeFilter === "verified" ? "active" : ""}
-              onClick={() => setActiveFilter("verified")}
-            >
-              Verified
-            </button>
-            <button 
-              className={activeFilter === "unverified" ? "active" : ""}
-              onClick={() => setActiveFilter("unverified")}
-            >
-              Unverified
-            </button>
-          </div>
-          <button onClick={loadData} className="refresh-btn" disabled={isRefreshing}>
-            {isRefreshing ? "Refreshing..." : "Refresh"}
-          </button>
-        </div>
-
-        <div className="data-grid">
-          {filteredData.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-icon">🧬</div>
-              <p>No genetic data found</p>
-              <button onClick={() => setShowCreateModal(true)} className="create-btn">
-                Add First Dataset
+        <div className="marketplace-section">
+          <div className="section-header">
+            <h2>Encrypted Genetic Data Marketplace</h2>
+            <div className="header-controls">
+              <div className="search-box">
+                <input 
+                  type="text" 
+                  placeholder="Search genetic data..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+              <button 
+                onClick={loadData} 
+                className="refresh-btn" 
+                disabled={isRefreshing}
+              >
+                {isRefreshing ? "Refreshing..." : "Refresh"}
               </button>
             </div>
+          </div>
+          
+          {renderStatsPanel()}
+          
+          <div className="fhe-info-panel">
+            <h3>FHE 🔐 Privacy-Preserving Computation</h3>
+            {renderFHEProcess()}
+          </div>
+        </div>
+        
+        <div className="data-section">
+          <div className="section-tabs">
+            <button className="tab-active">All Data</button>
+            <button onClick={() => setShowFAQ(true)}>FAQ</button>
+          </div>
+          
+          {showFAQ ? (
+            renderFAQSection()
           ) : (
-            filteredData.map((item, index) => (
-              <div 
-                className={`data-card ${item.isVerified ? "verified" : ""}`}
-                key={index}
-                onClick={() => setSelectedData(item)}
-              >
-                <div className="card-header">
-                  <h3>{item.name}</h3>
-                  <span className={`status ${item.isVerified ? "verified" : "pending"}`}>
-                    {item.isVerified ? "✅ Verified" : "🔓 Pending"}
-                  </span>
+            <div className="data-list">
+              {filteredData.length === 0 ? (
+                <div className="no-data">
+                  <p>No genetic data listings found</p>
+                  <button 
+                    className="create-btn" 
+                    onClick={() => setShowCreateModal(true)}
+                  >
+                    List First Dataset
+                  </button>
                 </div>
-                <p className="description">{item.description}</p>
-                <div className="card-meta">
-                  <span>Category: {item.publicValue1}</span>
-                  <span>Created: {new Date(item.timestamp * 1000).toLocaleDateString()}</span>
-                </div>
-                {item.isVerified && (
-                  <div className="decrypted-value">
-                    Value: {item.decryptedValue}
+              ) : filteredData.map((data, index) => (
+                <div 
+                  className={`data-item ${selectedData?.id === data.id ? "selected" : ""} ${data.isVerified ? "verified" : ""}`} 
+                  key={index}
+                  onClick={() => setSelectedData(data)}
+                >
+                  <div className="data-header">
+                    <div className="data-title">{data.name}</div>
+                    <div className="data-badge">{data.isVerified ? "✅ Verified" : "🔓 Ready"}</div>
                   </div>
-                )}
-              </div>
-            ))
+                  <div className="data-meta">
+                    <span>Age: {data.age}</span>
+                    <span>Quality: {data.qualityScore}/10</span>
+                    <span>{new Date(data.timestamp * 1000).toLocaleDateString()}</span>
+                  </div>
+                  <div className="data-description">{data.description}</div>
+                  <div className="data-creator">Owner: {data.creator.substring(0, 6)}...{data.creator.substring(38)}</div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>
       
       {showCreateModal && (
-        <CreateDataModal 
-          onSubmit={createData} 
+        <ModalCreateData 
+          onSubmit={createGeneData} 
           onClose={() => setShowCreateModal(false)} 
           creating={creatingData} 
-          data={newData} 
-          setData={setNewData}
+          geneData={newGeneData} 
+          setGeneData={setNewGeneData}
           isEncrypting={isEncrypting}
         />
       )}
@@ -445,116 +577,121 @@ const App: React.FC = () => {
         <DataDetailModal 
           data={selectedData} 
           onClose={() => setSelectedData(null)} 
-          isDecrypting={isDecrypting || fheIsDecrypting} 
+          isDecrypting={fheIsDecrypting} 
           decryptData={() => decryptData(selectedData.id)}
         />
       )}
       
       {transactionStatus.visible && (
-        <div className="transaction-toast">
-          <div className={`toast-content ${transactionStatus.status}`}>
-            <div className="toast-icon">
-              {transactionStatus.status === "pending" && <div className="spinner"></div>}
-              {transactionStatus.status === "success" && "✓"}
-              {transactionStatus.status === "error" && "✗"}
+        <div className="transaction-modal">
+          <div className="transaction-content">
+            <div className={`transaction-icon ${transactionStatus.status}`}>
+              {transactionStatus.status === "pending" && <div className="fhe-spinner"></div>}
+              {transactionStatus.status === "success" && <div className="success-icon">✓</div>}
+              {transactionStatus.status === "error" && <div className="error-icon">✗</div>}
             </div>
-            <div className="toast-message">{transactionStatus.message}</div>
+            <div className="transaction-message">{transactionStatus.message}</div>
           </div>
         </div>
       )}
-
-      <footer className="app-footer">
-        <div className="footer-content">
-          <p>GeneMart FHE - Secure Genetic Data Marketplace powered by Zama FHE Technology</p>
-          <div className="footer-links">
-            <span>Data Authorization & Revenue Sharing</span>
-            <span>Research Acceleration</span>
-            <span>Privacy First</span>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 };
 
-const CreateDataModal: React.FC<{
+const ModalCreateData: React.FC<{
   onSubmit: () => void; 
   onClose: () => void; 
   creating: boolean;
-  data: any;
-  setData: (data: any) => void;
+  geneData: any;
+  setGeneData: (data: any) => void;
   isEncrypting: boolean;
-}> = ({ onSubmit, onClose, creating, data, setData, isEncrypting }) => {
+}> = ({ onSubmit, onClose, creating, geneData, setGeneData, isEncrypting }) => {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     if (name === 'value') {
       const intValue = value.replace(/[^\d]/g, '');
-      setData({ ...data, [name]: intValue });
+      setGeneData({ ...geneData, [name]: intValue });
     } else {
-      setData({ ...data, [name]: value });
+      setGeneData({ ...geneData, [name]: value });
     }
   };
 
   return (
     <div className="modal-overlay">
-      <div className="create-modal">
+      <div className="create-data-modal">
         <div className="modal-header">
-          <h2>Add Genetic Data</h2>
-          <button onClick={onClose} className="close-btn">&times;</button>
+          <h2>List Genetic Data</h2>
+          <button onClick={onClose} className="close-modal">&times;</button>
         </div>
         
         <div className="modal-body">
           <div className="fhe-notice">
-            <strong>FHE 🔐 Protection</strong>
-            <p>Genetic data value will be encrypted with Zama FHE (Integer only)</p>
+            <strong>FHE 🔐 Encryption</strong>
+            <p>Genetic value will be encrypted with Zama FHE (Integer only)</p>
           </div>
           
           <div className="form-group">
-            <label>Data Name *</label>
+            <label>Data Set Name *</label>
             <input 
               type="text" 
               name="name" 
-              value={data.name} 
+              value={geneData.name} 
               onChange={handleChange} 
-              placeholder="Enter data name..." 
+              placeholder="Enter data set name..." 
             />
           </div>
           
           <div className="form-group">
-            <label>Data Value (Integer only) *</label>
+            <label>Genetic Value (Integer only) *</label>
             <input 
               type="number" 
               name="value" 
-              value={data.value} 
+              value={geneData.value} 
               onChange={handleChange} 
-              placeholder="Enter data value..." 
+              placeholder="Enter genetic value..." 
               step="1"
               min="0"
             />
-            <div className="input-hint">FHE Encrypted Integer</div>
+            <div className="data-type-label">FHE Encrypted Integer</div>
           </div>
           
-          <div className="form-group">
-            <label>Category (1-10) *</label>
-            <input 
-              type="number" 
-              min="1" 
-              max="10" 
-              name="category" 
-              value={data.category} 
-              onChange={handleChange} 
-              placeholder="Enter category..." 
-            />
-            <div className="input-hint">Public Data</div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Donor Age *</label>
+              <input 
+                type="number" 
+                name="age" 
+                value={geneData.age} 
+                onChange={handleChange} 
+                placeholder="Age" 
+                min="0"
+                max="120"
+              />
+              <div className="data-type-label">Public Data</div>
+            </div>
+            
+            <div className="form-group">
+              <label>Quality Score (1-10) *</label>
+              <input 
+                type="number" 
+                min="1" 
+                max="10" 
+                name="quality" 
+                value={geneData.quality} 
+                onChange={handleChange} 
+                placeholder="1-10" 
+              />
+              <div className="data-type-label">Public Data</div>
+            </div>
           </div>
           
           <div className="form-group">
             <label>Description</label>
             <textarea 
               name="description" 
-              value={data.description} 
+              value={geneData.description} 
               onChange={handleChange} 
-              placeholder="Enter data description..." 
+              placeholder="Describe your genetic data..." 
               rows={3}
             />
           </div>
@@ -564,10 +701,10 @@ const CreateDataModal: React.FC<{
           <button onClick={onClose} className="cancel-btn">Cancel</button>
           <button 
             onClick={onSubmit} 
-            disabled={creating || isEncrypting || !data.name || !data.value || !data.category} 
+            disabled={creating || isEncrypting || !geneData.name || !geneData.value || !geneData.age || !geneData.quality} 
             className="submit-btn"
           >
-            {creating || isEncrypting ? "Encrypting..." : "Create Data"}
+            {creating || isEncrypting ? "Encrypting and Listing..." : "List Data Set"}
           </button>
         </div>
       </div>
@@ -576,7 +713,7 @@ const CreateDataModal: React.FC<{
 };
 
 const DataDetailModal: React.FC<{
-  data: GeneticData;
+  data: GeneData;
   onClose: () => void;
   isDecrypting: boolean;
   decryptData: () => Promise<number | null>;
@@ -584,7 +721,10 @@ const DataDetailModal: React.FC<{
   const [localDecrypted, setLocalDecrypted] = useState<number | null>(null);
 
   const handleDecrypt = async () => {
-    if (data.isVerified) return;
+    if (localDecrypted !== null) { 
+      setLocalDecrypted(null); 
+      return; 
+    }
     
     const decrypted = await decryptData();
     if (decrypted !== null) {
@@ -594,87 +734,84 @@ const DataDetailModal: React.FC<{
 
   return (
     <div className="modal-overlay">
-      <div className="detail-modal">
+      <div className="data-detail-modal">
         <div className="modal-header">
           <h2>Genetic Data Details</h2>
-          <button onClick={onClose} className="close-btn">&times;</button>
+          <button onClick={onClose} className="close-modal">&times;</button>
         </div>
         
         <div className="modal-body">
           <div className="data-info">
-            <div className="info-row">
-              <span>Data Name:</span>
+            <div className="info-item">
+              <span>Data Set:</span>
               <strong>{data.name}</strong>
             </div>
-            <div className="info-row">
-              <span>Creator:</span>
+            <div className="info-item">
+              <span>Owner:</span>
               <strong>{data.creator.substring(0, 6)}...{data.creator.substring(38)}</strong>
             </div>
-            <div className="info-row">
-              <span>Created:</span>
-              <strong>{new Date(data.timestamp * 1000).toLocaleString()}</strong>
+            <div className="info-item">
+              <span>Listed:</span>
+              <strong>{new Date(data.timestamp * 1000).toLocaleDateString()}</strong>
             </div>
-            <div className="info-row">
-              <span>Category:</span>
-              <strong>{data.publicValue1}</strong>
+            <div className="info-item">
+              <span>Donor Age:</span>
+              <strong>{data.age}</strong>
             </div>
-            <div className="info-row">
-              <span>Description:</span>
-              <p>{data.description}</p>
+            <div className="info-item">
+              <span>Quality Score:</span>
+              <strong>{data.qualityScore}/10</strong>
             </div>
+          </div>
+          
+          <div className="data-description-full">
+            <h3>Description</h3>
+            <p>{data.description}</p>
           </div>
           
           <div className="encryption-section">
-            <h3>FHE Encryption Status</h3>
+            <h3>FHE Encrypted Genetic Value</h3>
+            
             <div className="encryption-status">
-              <div className={`status-badge ${data.isVerified ? "verified" : "encrypted"}`}>
-                {data.isVerified ? "✅ On-chain Verified" : "🔒 FHE Encrypted"}
+              <div className="status-item">
+                <span>Encryption Status:</span>
+                <strong>{data.isVerified ? "✅ On-chain Verified" : "🔒 Encrypted"}</strong>
               </div>
               
-              <div className="data-value-display">
-                <strong>Data Value:</strong>
-                <span className="value">
-                  {data.isVerified ? 
-                    data.decryptedValue : 
+              <div className="status-item">
+                <span>Genetic Value:</span>
+                <strong>
+                  {data.isVerified && data.decryptedValue ? 
+                    `${data.decryptedValue} (Verified)` : 
                     localDecrypted !== null ? 
-                    localDecrypted : 
-                    "🔒 Encrypted"
+                    `${localDecrypted} (Decrypted)` : 
+                    "🔒 FHE Encrypted"
                   }
-                </span>
-                {data.isVerified && <span className="badge">On-chain</span>}
-                {localDecrypted !== null && !data.isVerified && <span className="badge local">Local</span>}
+                </strong>
               </div>
             </div>
             
-            {!data.isVerified && (
-              <button 
-                className={`decrypt-btn ${isDecrypting ? "decrypting" : ""}`}
-                onClick={handleDecrypt}
-                disabled={isDecrypting}
-              >
-                {isDecrypting ? "Decrypting..." : "Verify Decryption"}
-              </button>
-            )}
-          </div>
-          
-          <div className="fhe-explanation">
-            <h4>FHE Protection Process</h4>
-            <div className="process-steps">
-              <div className="step">
-                <div className="step-number">1</div>
-                <p>Data encrypted client-side with Zama FHE</p>
-              </div>
-              <div className="step">
-                <div className="step-number">2</div>
-                <p>Encrypted data stored on blockchain</p>
-              </div>
-              <div className="step">
-                <div className="step-number">3</div>
-                <p>Authorized computations performed on encrypted data</p>
-              </div>
-              <div className="step">
-                <div className="step-number">4</div>
-                <p>Results verified on-chain with zero-knowledge proofs</p>
+            <button 
+              className={`decrypt-btn ${(data.isVerified || localDecrypted !== null) ? 'decrypted' : ''}`}
+              onClick={handleDecrypt} 
+              disabled={isDecrypting}
+            >
+              {isDecrypting ? (
+                "🔓 Decrypting..."
+              ) : data.isVerified ? (
+                "✅ Verified"
+              ) : localDecrypted !== null ? (
+                "🔄 Re-verify"
+              ) : (
+                "🔓 Decrypt Value"
+              )}
+            </button>
+            
+            <div className="fhe-explanation">
+              <div className="fhe-icon">🔐</div>
+              <div>
+                <strong>FHE Protection</strong>
+                <p>Your genetic value is encrypted on-chain. Decryption happens locally and is verified on-chain without exposing the raw data.</p>
               </div>
             </div>
           </div>
@@ -682,6 +819,15 @@ const DataDetailModal: React.FC<{
         
         <div className="modal-footer">
           <button onClick={onClose} className="close-btn">Close</button>
+          {!data.isVerified && (
+            <button 
+              onClick={handleDecrypt} 
+              disabled={isDecrypting}
+              className="verify-btn"
+            >
+              {isDecrypting ? "Verifying..." : "Verify on-chain"}
+            </button>
+          )}
         </div>
       </div>
     </div>
